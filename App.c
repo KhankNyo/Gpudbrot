@@ -3,7 +3,7 @@
 app_state App_OnEntry(void)
 {
     app_state App = { 0 };
-    Platform_SetScreenBufferDimensions(1080, 720);
+    Platform_SetScreenBufferDimensions(480, 480);
     Platform_SetVSync(false);
     return App;
 }
