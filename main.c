@@ -226,9 +226,6 @@ static bool IsKeyDown(int Key)
 
 int main(void)
 {
-    printf("Hello, world\n");
-    return 0;
-
     int WindowWidth = 1080, WindowHeight = 720;
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);

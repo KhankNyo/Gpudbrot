@@ -2,6 +2,10 @@
 #define MODERN_OPENGL_H
 
 
+#ifndef GLuint 
+#  define GLuint unsigned
+#endif /* GLuint */
+
 /* wglCreateContextAttribARB */
 /* Accepted as an attribute name in <*attribList>: */
 #define WGL_CONTEXT_MAJOR_VERSION_ARB           0x2091

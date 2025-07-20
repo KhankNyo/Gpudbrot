@@ -1,7 +1,19 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "Common.h"
+#include "glad/glad.h"
+
+
+typedef enum 
+{
+    PLATFORM_KEY_LEFT_SHIFT,
+    PLATFORM_KEY_DOWN_ARROW,
+    PLATFORM_KEY_UP_ARROW,
+    PLATFORM_KEY_COUNT,
+} platform_key;
 
 typedef enum
 {
@@ -15,20 +27,14 @@ typedef struct
     union {
         struct {
             int X, Y;
-            bool8 LButton;
-            bool8 RButton;
+            bool8 IsLeftClicking;
+            bool8 IsRightClicking;
         } Move;
         struct {
             bool8 ScrollTowardUser;
         } Wheel;
     } Status;
 } mouse_data;
-
-typedef struct
-{
-    u32 *Ptr;
-    i32 Width, Height;
-} platform_screen_buffer;
 
 typedef struct 
 {
@@ -38,7 +44,19 @@ typedef struct
 
 typedef struct 
 {
-    int Dummty;
+    float ScreenToWorldScaleFactor;
+    float WorldBottom, WorldHeight;
+    float WorldLeft, WorldWidth;
+    int IterationCount;
+    float TimeSinceLastIterationCountChange;
+    float MouseX, MouseY;
+
+    const char *FragmentShaderFileName;
+    const char *VertexShaderFileName;
+    float *ColorPalette;
+    int ColorPaletteCount;
+    GLuint ShaderProgramID;
+    GLuint VAO;
 } app_state;
 
 
@@ -52,7 +70,7 @@ void App_OnLoop(app_state *State);
 void App_OnExit(app_state *State);
 /* event handlers */
 void App_OnMouseEvent(app_state *State, const mouse_data *Mouse);
-void App_OnRedrawRequest(app_state *State, platform_screen_buffer *Ctx);
+void App_OnRedrawRequest(app_state *State, int Width, int Height);
 /* getter */
 const char *App_GetName(app_state *State);
 
@@ -66,18 +84,22 @@ void Platform_SetFrameTimeTarget(double MillisecPerFrame);
 void Platform_SetVSync(bool8 Enable);
 
 /* getters */
-platform_screen_buffer Platform_GetScreenBuffer(void);
 platform_window_dimensions Platform_GetWindowDimensions(void);
 double Platform_GetElapsedTimeMs(void); /* starting from right before Graph_OnEntry() */
 double Platform_GetFrameTimeMs(void);
+bool8 Platform_IsKeyDown(platform_key Key);
+bool8 Platform_IsKeyPressed(platform_key Key);
 
 /* event request */
 void Platform_RequestRedraw(void);
 
 /* misc */
-void *Platform_AllocateMemory(uint Size);
-void Platform_EnableExecution(void *Memory, uint ByteCount);
-void Platform_DisableExecution(void *Memory, uint ByteCount);
+int Platform_BeginTempMemory(void);
+char *Platform_PushNullTerminatedFileContentBlocking(int *PlatformMemory, const char *FileName);
+/* returned memory is aligned on 4-byte boundary */
+void *Platform_PushMemory(int *PlatformMemory, int SizeBytes);
+void Platform_PopMemory(int PlatformMemory);
+
 
 
 

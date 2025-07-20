@@ -1,4 +1,4 @@
-#version 460 core
+#version 400 core
 
 #define COLOR_PALETTE_SIZE 16
 
@@ -30,7 +30,15 @@ void main()
     }
 
     /* determine the color */
-    vec3 Color = u_ColorPalette[i & (COLOR_PALETTE_SIZE - 1)] * float(i < u_IterationCount);
-
+    vec3 Color;
+    if (i < u_IterationCount)
+    {
+        Color = u_ColorPalette[i & (COLOR_PALETTE_SIZE - 1)];
+    }
+    else
+    {
+        Color = vec3(0.0f);
+    }
     FragColor = vec4(Color, 1.0f);
+
 }

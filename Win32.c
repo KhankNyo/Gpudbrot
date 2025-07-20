@@ -12,23 +12,33 @@
 /* must be inclued after window.h */
 #include <gl/GL.h>
 
+#define MB (1024*1024)
+#define WIN32_KEYCODE_COUNT UINT8_MAX
+
 
 
 typedef struct win32_context
 {
-    BITMAPINFO BitmapInfo;
-    platform_screen_buffer BackBuffer;
+    HWND Handle;
+    int Width, Height;
 } win32_context;
 
-static HWND sWin32_MainWindowHandle;
-static win32_context sWin32_Ctx;
-static BOOL sWin32_WindowInitialized = FALSE;
+static win32_context sWin32_MainWindow;
 static app_state sWin32_AppState;
 static double sWin32_MsPerPerfCount;
 static double sWin32_FrameTimeTargetMs;
-static BOOL sWin32_EnableVSync;
 static LARGE_INTEGER sWin32_PerfCountBegin;
 static double sWin32_FrameTimeMs;
+static uint8_t sWin32_WasKeyDown[WIN32_KEYCODE_COUNT];
+static uint8_t sWin32_IsKeyDown[WIN32_KEYCODE_COUNT];
+/* 
+    memory format: 
+        [sp - data size]:   data ...
+        [sp]:               junk
+*/
+/* NOTE: uint32_t is the type to force 4-byte alignment */
+static uint32_t sWin32_StackAllocatorMemory[4*MB / sizeof(uint32_t)]; 
+static BYTE *sWin32_StackAllocatorTop = (BYTE *)sWin32_StackAllocatorMemory;
 
 
 typedef void WINAPI wgl_swap_interval_ext(GLint);
@@ -40,33 +50,6 @@ static void Win32_Fatal(const char *ErrorMessage)
 {
     MessageBoxA(NULL, ErrorMessage, "Fatal Error", MB_ICONERROR);
     ExitProcess(1);
-}
-
-static win32_context Win32_CreateBackBuffer(int Width, int Height)
-{
-    win32_context Ctx = { 
-        .BitmapInfo.bmiHeader = {
-            .biSize = sizeof(BITMAPINFO),
-            .biWidth = Width,
-            .biHeight = -Height, 
-            .biBitCount = 32,
-            .biPlanes = 1,
-            .biCompression = BI_RGB,
-        },
-        .BackBuffer.Width = Width, 
-        .BackBuffer.Height = Height,
-    };
-    Ctx.BackBuffer.Ptr = VirtualAlloc(
-        NULL, 
-        Width*Height * sizeof(UINT32), 
-        MEM_COMMIT, 
-        PAGE_READWRITE
-    );
-    if (NULL == Ctx.BackBuffer.Ptr)
-    {
-        Win32_Fatal("Out of memory");
-    }
-    return Ctx;
 }
 
 static void WINAPI Win32_Stub()
@@ -84,38 +67,15 @@ static void *Win32_LoadWGLFunctionOrStub(const char *Name)
     return Fn;
 }
 
-static void Win32_DisplayBufferToWindow(HWND Window, platform_screen_buffer *Buffer)
+static void Win32_DisplayBufferToWindow(HWND Window)
 {
-#if 0
-    PAINTSTRUCT PaintStruct;
-    HDC DeviceContext = BeginPaint(Window, &PaintStruct);
-    int Left = PaintStruct.rcPaint.left;
-    int Top = PaintStruct.rcPaint.top;
-    int Width = PaintStruct.rcPaint.right - PaintStruct.rcPaint.left;
-    int Height = PaintStruct.rcPaint.bottom - PaintStruct.rcPaint.top;
-
-    StretchDIBits(
-        DeviceContext, 
-        Left, Top,
-        Width, Height, 
-        0, 0, 
-        sWin32_Ctx.BackBuffer.Width, sWin32_Ctx.BackBuffer.Height, 
-        sWin32_Ctx.BackBuffer.Ptr, 
-        &sWin32_Ctx.BitmapInfo, 
-        DIB_RGB_COLORS, SRCCOPY
-    );
-    EndPaint(Window, &PaintStruct);
-#else
     platform_window_dimensions WindowDimensions = Platform_GetWindowDimensions();
     HDC WindowDC = GetDC(Window);
     {
-        glViewport(0, 0, WindowDimensions.Width, WindowDimensions.Height);
-        glClearColor(.2f, .3f, .4f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        App_OnRedrawRequest(&sWin32_AppState, WindowDimensions.Width, WindowDimensions.Height);
         SwapBuffers(WindowDC);
     }
     ReleaseDC(Window, WindowDC);
-#endif
 }
 
 
@@ -129,16 +89,19 @@ static LRESULT CALLBACK Win32_MainWndProc(HWND Window, UINT Msg, WPARAM wParam, 
     {
         PostQuitMessage(0);
     } break;
-    case WM_SIZE:
-    {
-        Platform_RequestRedraw();
-    } break;
     case WM_PAINT:
     {
-        Win32_DisplayBufferToWindow(Window, &sWin32_Ctx.BackBuffer);
+        Win32_DisplayBufferToWindow(Window);
         PAINTSTRUCT PaintStruct;
-        HDC DeviceContext = BeginPaint(Window, &PaintStruct);
+        BeginPaint(Window, &PaintStruct);
         EndPaint(Window, &PaintStruct);
+    } break;
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    {
+        uint8_t Keycode = wParam;
+        sWin32_WasKeyDown[Keycode] = sWin32_IsKeyDown[Keycode];
+        sWin32_IsKeyDown[Keycode] = Msg == WM_KEYDOWN;
     } break;
     case WM_MOUSEMOVE:
     {
@@ -147,8 +110,8 @@ static LRESULT CALLBACK Win32_MainWndProc(HWND Window, UINT Msg, WPARAM wParam, 
             .Status.Move = {
                 .X = (i16)LOWORD(lParam), 
                 .Y = (i16)HIWORD(lParam),
-                .LButton = (wParam & MK_LBUTTON) != 0,
-                .RButton = (wParam & MK_RBUTTON) != 0,
+                .IsLeftClicking = (wParam & MK_LBUTTON) != 0,
+                .IsRightClicking = (wParam & MK_RBUTTON) != 0,
             },
         };
         App_OnMouseEvent(&sWin32_AppState, &Data);
@@ -172,6 +135,7 @@ static LRESULT CALLBACK Win32_MainWndProc(HWND Window, UINT Msg, WPARAM wParam, 
 
 static BOOL Win32_PollInputs(void)
 {
+    memcpy(sWin32_WasKeyDown, sWin32_IsKeyDown, WIN32_KEYCODE_COUNT);
     MSG Msg;
     while (PeekMessageA(&Msg, 0, 0, 0, PM_REMOVE) > 0)
     {
@@ -225,11 +189,12 @@ static BOOL Win32_InitOpenGL(HWND Window)
     if (wglCreateContextAttribs)
     {
         /* we are in a modern version of OpenGL */
-        GLint Attribs[] = {
+        static const GLint Attribs[] = {
             WGL_CONTEXT_MAJOR_VERSION_ARB, 4, 
             WGL_CONTEXT_MINOR_VERSION_ARB, 0, 
             WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-            WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB, 
+            /* NOTE: forward compat means old stuff will not work */
+            // WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB, 
             0
         };
         /* used for sharing texture data and such, not used here though */
@@ -282,7 +247,7 @@ int WINAPI BogusWinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PCHAR CmdLin
     };
     RegisterClassExA(&WindowClass);
 
-    /* initializer timer */
+    /* initialize timer */
     {
         LARGE_INTEGER Freq;
         QueryPerformanceFrequency(&Freq);
@@ -292,34 +257,33 @@ int WINAPI BogusWinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PCHAR CmdLin
 
     /* window creation */
     Platform_SetScreenBufferDimensions(1080, 720);
-    sWin32_MainWindowHandle = CreateWindowExA(
+    sWin32_MainWindow.Handle = CreateWindowExA(
         WS_EX_CLIENTEDGE, 
         "AppCls", 
         App_GetName(&sWin32_AppState), 
         WS_OVERLAPPEDWINDOW | WS_BORDER | WS_CAPTION, 
         CW_USEDEFAULT, 
         CW_USEDEFAULT, 
-        sWin32_Ctx.BackBuffer.Width, 
-        sWin32_Ctx.BackBuffer.Height,
+        sWin32_MainWindow.Width, 
+        sWin32_MainWindow.Height,
         NULL, 
         NULL, 
         Instance, 
         NULL
     );
-    if (NULL == sWin32_MainWindowHandle)
+    if (NULL == sWin32_MainWindow.Handle)
     {
         Win32_Fatal("Unable to create window.");
     }
-    if (!Win32_InitOpenGL(sWin32_MainWindowHandle))
+    if (!Win32_InitOpenGL(sWin32_MainWindow.Handle))
     {
         Win32_Fatal("Unable to initialize OpenGL, TODO: fallback to software rendering");
     }
-    sWin32_WindowInitialized = TRUE;
 
     /* app entry point, after window creation and opengl initialization */
     sWin32_AppState = App_OnEntry();
 
-    ShowWindow(sWin32_MainWindowHandle, SW_SHOW);
+    ShowWindow(sWin32_MainWindow.Handle, SW_SHOW);
     LARGE_INTEGER StartTime, EndTime;
     QueryPerformanceCounter(&StartTime);
     while (Win32_PollInputs())
@@ -342,8 +306,8 @@ int WINAPI BogusWinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PCHAR CmdLin
     App_OnExit(&sWin32_AppState);
 
     /* don't need to cleanup, windows does it faster */
-    (void)sWin32_MainWindowHandle;
-    (void)sWin32_Ctx;
+    (void)sWin32_MainWindow.Handle;
+    (void)sWin32_MainWindow;
 
     ExitProcess(0);
 }
@@ -351,17 +315,12 @@ int WINAPI BogusWinMain(HINSTANCE Instance, HINSTANCE PrevInstance, PCHAR CmdLin
 
 void Platform_SetScreenBufferDimensions(int Width, int Height)
 {
-    platform_screen_buffer *Ctx = &sWin32_Ctx.BackBuffer;
-    if (Ctx->Ptr)
-    {
-        int Size = Ctx->Width * Ctx->Height;
-        VirtualFree(sWin32_Ctx.BackBuffer.Ptr, Size, MEM_RELEASE);
-    }
-    sWin32_Ctx = Win32_CreateBackBuffer(Width, Height);
-    if (sWin32_MainWindowHandle)
+    sWin32_MainWindow.Width = Width;
+    sWin32_MainWindow.Height = Height;
+    if (sWin32_MainWindow.Handle)
     {
         SetWindowPos(
-            sWin32_MainWindowHandle, 
+            sWin32_MainWindow.Handle, 
             NULL, 
             0, 0, Width, Height, 
             SWP_NOMOVE | SWP_NOREPOSITION | SWP_SHOWWINDOW
@@ -370,15 +329,11 @@ void Platform_SetScreenBufferDimensions(int Width, int Height)
 }
 
 
-platform_screen_buffer Platform_GetScreenBuffer(void)
-{
-    return sWin32_Ctx.BackBuffer;
-}
 
 platform_window_dimensions Platform_GetWindowDimensions(void)
 {
     RECT Rect;
-    GetClientRect(sWin32_MainWindowHandle, &Rect);
+    GetClientRect(sWin32_MainWindow.Handle, &Rect);
     return (platform_window_dimensions) {
         .Width = Rect.right - Rect.left,
         .Height = Rect.bottom - Rect.top,
@@ -387,10 +342,9 @@ platform_window_dimensions Platform_GetWindowDimensions(void)
 
 void Platform_RequestRedraw(void)
 {
-    if (sWin32_WindowInitialized)
+    if (sWin32_MainWindow.Handle)
     {
-        App_OnRedrawRequest(&sWin32_AppState, &sWin32_Ctx.BackBuffer);
-        InvalidateRect(sWin32_MainWindowHandle, NULL, FALSE);
+        InvalidateRect(sWin32_MainWindow.Handle, NULL, FALSE);
     }
 }
 
@@ -422,31 +376,89 @@ double Platform_GetFrameTimeMs(void)
     return sWin32_FrameTimeMs;
 }
 
-void *Platform_AllocateMemory(uint Size)
+
+int Platform_BeginTempMemory(void)
 {
-    SYSTEM_INFO Info;
-    GetSystemInfo(&Info);
-    if (Size % Info.dwPageSize)
+    return 0;
+}
+
+char *Platform_PushNullTerminatedFileContentBlocking(int *PlatformMemory, const char *FileName)
+{
+    HANDLE FileHandle = CreateFileA(FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (INVALID_HANDLE_VALUE == FileHandle)
     {
-        /* round to highest page size */
-        Size = (Size + Info.dwPageSize) / Info.dwPageSize * Info.dwPageSize;
+        return NULL;
     }
-    void *Ptr = VirtualAlloc(NULL, Size, MEM_COMMIT, PAGE_READWRITE);
-    assert(Ptr && "Memory allocation failed");
+    DWORD Low, High = 0;
+    Low = GetFileSize(FileHandle, &High);
+    uint64_t FileSize = Low | (uint64_t)High << 32;
 
-    return Ptr;
+    assert(FileSize < INT32_MAX);
+    int FileContentBufferSize = FileSize + 1;
+    char *FileContentBuffer = Platform_PushMemory(PlatformMemory, FileContentBufferSize);
+
+    DWORD BytesRead;
+    if (!ReadFile(FileHandle, FileContentBuffer, FileSize, &BytesRead, NULL)
+    || FileSize != BytesRead)
+    {
+        *PlatformMemory -= FileContentBufferSize;
+        Platform_PopMemory(FileContentBufferSize);
+        return NULL;
+    }
+
+    FileContentBuffer[FileSize] = 0;
+
+    CloseHandle(FileHandle);
+    return FileContentBuffer;
 }
 
-void Platform_EnableExecution(void *Memory, uint ByteCount)
+void *Platform_PushMemory(int *PlatformMemory, int SizeBytes)
 {
-    DWORD OldPerms;
-    VirtualProtect(Memory, ByteCount, PAGE_EXECUTE_READ, &OldPerms);
+    int32_t AlignedSize = 0;
+    if (SizeBytes > 0)
+    {
+        /* align size to 4-byte boundary */
+        AlignedSize = (SizeBytes + sizeof(AlignedSize)) & ~0x3;
+    }
+
+    /* allocate the memory */
+    void *Memory = sWin32_StackAllocatorTop;
+    sWin32_StackAllocatorTop += AlignedSize;
+    BYTE *StackEnd = (BYTE *)(sWin32_StackAllocatorMemory + STATIC_ARRAY_SIZE(sWin32_StackAllocatorMemory));
+    assert(sWin32_StackAllocatorTop <= StackEnd && "Out of memory");
+
+    (*PlatformMemory) += AlignedSize;
+    return Memory;
 }
 
-void Platform_DisableExecution(void *Memory, uint ByteCount)
+void Platform_PopMemory(int SizeBytes)
 {
-    DWORD OldPerms;
-    VirtualProtect(Memory, ByteCount, PAGE_READWRITE, &OldPerms);
+    sWin32_StackAllocatorTop -= SizeBytes;
+    assert(sWin32_StackAllocatorTop >= (BYTE *)sWin32_StackAllocatorMemory);
 }
 
+
+static uint8_t Win32_KeycodeFromPlatformKey(platform_key Key)
+{
+    static const uint8_t Lookup[PLATFORM_KEY_COUNT] = {
+        [PLATFORM_KEY_LEFT_SHIFT] = VK_SHIFT,
+        [PLATFORM_KEY_DOWN_ARROW] = VK_DOWN,
+        [PLATFORM_KEY_UP_ARROW] = VK_UP,
+    };
+    return Lookup[Key];
+}
+
+bool8 Platform_IsKeyPressed(platform_key Key)
+{
+    uint8_t Keycode = Win32_KeycodeFromPlatformKey(Key);
+    bool8 Pressed = sWin32_WasKeyDown[Keycode] && !sWin32_IsKeyDown[Keycode];
+    return Pressed;
+}
+
+bool8 Platform_IsKeyDown(platform_key Key)
+{
+    uint8_t Keycode = Win32_KeycodeFromPlatformKey(Key);
+    bool8 Down = sWin32_IsKeyDown[Keycode];
+    return Down;
+}
 
