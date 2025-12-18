@@ -5,4 +5,5 @@
 *.o
 *.lib
 compile_commands.json
+main
 
