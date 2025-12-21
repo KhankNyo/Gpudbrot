@@ -1,6 +1,6 @@
 
 gcc -Wextra -Wall \
     -I"./extern/glad/include/" \
-    ./OpenGL.c ./extern/glad/src/glad.c \
+    ./main.c ./extern/glad/src/glad.c \
     -o ./main \
     -lglfw
