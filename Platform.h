@@ -85,7 +85,7 @@ void Platform_SetVSync(bool8 Enable);
 
 /* getters */
 platform_window_dimensions Platform_GetWindowDimensions(void);
-double Platform_GetElapsedTimeMs(void); /* starting from right before Graph_OnEntry() */
+double Platform_GetElapsedTimeMs(void); /* starting from right before App_OnEntry() */
 double Platform_GetFrameTimeMs(void);
 bool8 Platform_IsKeyDown(platform_key Key);
 bool8 Platform_IsKeyPressed(platform_key Key);
