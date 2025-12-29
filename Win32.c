@@ -12,7 +12,6 @@
 /* must be inclued after window.h */
 #include <gl/GL.h>
 
-#define MB (1024*1024)
 #define WIN32_KEYCODE_COUNT UINT8_MAX
 
 

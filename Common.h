@@ -14,6 +14,7 @@
 #endif /* _MSC_VER */
 
 
+#define MB (1024*1024)
 
 
 #define ASSERT(x, msg) assert((x) && (msg))
